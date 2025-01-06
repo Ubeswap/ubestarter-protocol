@@ -7,55 +7,20 @@ import { Clones } from '@openzeppelin/contracts/proxy/Clones.sol';
 import { IERC20Metadata } from '@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol';
 import { Ownable } from '@openzeppelin/contracts/access/Ownable.sol';
 import { SafeERC20 } from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
-
-struct LaunchpadParams {
-    address token;
-    address quoteToken;
-    address owner;
-    // Token Sale Details
-    uint32 startDate; // epoch seconds
-    uint32 endDate; // epoch seconds
-    uint32 exchangeRate; // x / 100_000 (tokenAmount = quoteTokenAmount * exchangeRate / 100_000)
-    uint32 releaseDuration; // seconds
-    uint32 releaseInterval; // seconds
-    uint32 cliffDuration; // seconds
-    uint32 initialReleaseRate; // x / 100_000
-    uint32 cliffReleaseRate; // x / 100_000
-    uint128 hardCapAsQuote; // hard cap amount as quote token
-    uint128 softCapAsQuote; // soft cap amount as quote token
-    // Liquidity Params
-    uint24 liquidityRate; // x / 100_000 (percentage of raised tokens for liquidity)
-    uint24 liquidityFee; // v3 pool fee
-    int24 priceTick; // liquidity initial tick
-    int24 tickLower; // liquidity tick lower
-    int24 tickUpper; // liquidity tick upper
-    uint32 lockDuration; // lock duration of liquidity
-}
-
-struct LaunchpadDeployment {
-    address creator;
-    uint32 timestamp;
-    uint32 blocknumber;
-}
-
-struct QuoteTokenInfo {
-    uint128 minSoftCap; // quote token
-    uint128 maxSoftCap; // quote token
-}
-
-interface InitializableUbeStarter {
-    function initialize(
-        LaunchpadParams memory params,
-        bytes memory extraParams,
-        string memory infoCID,
-        string memory tokenSymbol,
-        uint8 tokenDecimals
-    ) external;
-
-    function cancel(string memory reason) external;
-}
+import { IInitializableImplementation } from './interfaces/IInitializableImplementation.sol';
 
 contract UbestarterFactory is Ownable {
+    struct LaunchpadDeployment {
+        address creator;
+        uint32 timestamp;
+        uint32 blocknumber;
+    }
+
+    struct QuoteTokenInfo {
+        uint128 minSoftCap; // quote token
+        uint128 maxSoftCap; // quote token
+    }
+
     // tokenAddress => QuoteTokenInfo
     mapping(address => QuoteTokenInfo) public quoteTokens;
     // hash => message
@@ -75,7 +40,7 @@ contract UbestarterFactory is Ownable {
         address indexed launchpadAddress,
         address indexed implementation,
         address creator,
-        LaunchpadParams params,
+        IInitializableImplementation.LaunchpadParams params,
         bytes extraParams,
         string infoCID,
         address verifier,
@@ -135,12 +100,12 @@ contract UbestarterFactory is Ownable {
 
     function cancelLaunchpad(address launchpad, string memory reason) external onlyOwner {
         require(deploymentInfos[launchpad].creator != address(0), 'invalid launchpad address');
-        InitializableUbeStarter(launchpad).cancel(reason);
+        IInitializableImplementation(launchpad).cancel(reason);
     }
 
     function deployLaunchpad(
         address implementation,
-        LaunchpadParams memory params,
+        IInitializableImplementation.LaunchpadParams memory params,
         bytes memory extraParams,
         string memory infoCID,
         bytes32 creatorDisclaimerHash,
@@ -181,7 +146,7 @@ contract UbestarterFactory is Ownable {
             string memory tokenSymbol = token.symbol();
             require(bytes(tokenSymbol).length > 0, 'invalid token symbol');
 
-            InitializableUbeStarter(newContract).initialize(
+            IInitializableImplementation(newContract).initialize(
                 params,
                 extraParams,
                 infoCID,

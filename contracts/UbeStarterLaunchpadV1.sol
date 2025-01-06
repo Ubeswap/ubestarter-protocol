@@ -10,40 +10,22 @@ import { SafeERC20 } from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import { INonfungiblePositionManager } from './interfaces/uniswap-v3/INonfungiblePositionManager.sol';
 import { TickMath } from './libraries/TickMath.sol';
+import { IInitializableImplementation } from './interfaces/IInitializableImplementation.sol';
 
-struct LaunchpadParams {
-    address token;
-    address quoteToken;
-    address owner;
-    // Token Sale Details
-    uint32 startDate; // epoch seconds
-    uint32 endDate; // epoch seconds
-    uint32 exchangeRate; // x / 100_000 (tokenAmount = quoteTokenAmount * exchangeRate / 100_000)
-    uint32 releaseDuration; // seconds
-    uint32 releaseInterval; // seconds
-    uint32 cliffDuration; // seconds
-    uint32 initialReleaseRate; // x / 100_000
-    uint32 cliffReleaseRate; // x / 100_000
-    uint128 hardCapAsQuote; // hard cap amount as quote token
-    uint128 softCapAsQuote; // soft cap amount as quote token
-    // Liquidity Params
-    uint24 liquidityRate; // x / 100_000 (percentage of raised tokens for liquidity)
-    uint24 liquidityFee; // v3 pool fee
-    int24 priceTick; // liquidity initial tick
-    int24 tickLower; // liquidity tick lower
-    int24 tickUpper; // liquidity tick upper
-    uint32 lockDuration; // lock duration of liquidity
-}
+contract UbeStarterLaunchpadV1 is
+    Initializable,
+    IInitializableImplementation,
+    ERC20Upgradeable,
+    ReentrancyGuard
+{
+    enum LaunchpadStatus {
+        Pending,
+        Active,
+        Canceled,
+        Succeeded,
+        Failed
+    }
 
-enum LaunchpadStatus {
-    Pending,
-    Active,
-    Canceled,
-    Succeeded,
-    Failed
-}
-
-contract UbeStarter is Initializable, ERC20Upgradeable, ReentrancyGuard {
     address public factory;
     LaunchpadParams private params;
     string private infoCID;
