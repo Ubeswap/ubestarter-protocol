@@ -10,33 +10,46 @@ import { SafeERC20 } from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import { INonfungiblePositionManager } from './interfaces/uniswap-v3/INonfungiblePositionManager.sol';
 import { TickMath } from './libraries/TickMath.sol';
+import { QuoteLibrary } from './libraries/QuoteLibrary.sol';
 import { IInitializableImplementation } from './interfaces/IInitializableImplementation.sol';
+import { IERC721Receiver } from '@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol';
+import { IUniswapV3Pool } from './interfaces/uniswap-v3/IUniswapV3Pool.sol';
+import { IUniswapV3Factory } from './interfaces/uniswap-v3/IUniswapV3Factory.sol';
 
 contract UbeStarterLaunchpadV1 is
     Initializable,
     IInitializableImplementation,
     ERC20Upgradeable,
-    ReentrancyGuard
+    ReentrancyGuard,
+    IERC721Receiver
 {
+    /*
+       Pending --> Active --> Succeeded --> Done
+                         \
+                        Failed
+    */
     enum LaunchpadStatus {
-        Pending,
-        Active,
-        Canceled,
-        Succeeded,
-        Failed
+        Pending, // token sale is not started
+        Active, // token sale is active
+        Succeeded, // token sale succeeded with softCap or hardCap
+        Done, // token sale succeeded and liquidity is created
+        Failed, // softCap could not be reached and token sale ended
+        Canceled
     }
 
     address public factory;
     LaunchpadParams private params;
-    string private infoCID;
+    string public infoCID;
     uint256 public participantCount;
     uint256 public buyCount;
     uint256 public totalRaisedAsQuote;
     uint256 public liquidityTokenId;
     mapping(address => uint256) public participantToQuoteAmount;
     mapping(address => uint256) public releasedAmounts;
+    uint256 public totalReleased;
+    string public cancelReason;
 
-    uint256 private MIN_START_DELAY = 1 hours; // 3 days
+    uint256 private constant MIN_START_DELAY = 1 hours; // 3 days
     uint256 private MAX_START_DELAY = 7 days;
     uint256 private MIN_LAUNCHPAD_DURATION = 1 hours; // 1 days
     uint256 private MAX_LAUNCHPAD_DURATION = 10 days;
@@ -46,19 +59,19 @@ contract UbeStarterLaunchpadV1 is
 
     INonfungiblePositionManager public nftPositionManager =
         INonfungiblePositionManager(0x897387c7B996485c3AAa85c94272Cd6C506f8c8F);
+    IUniswapV3Pool public pool;
 
     uint8 private tokenDecimals;
     bool private isCanceled = false;
-    bool private ownerPaid = false;
 
     event TokenBought(address account, uint256 quoteTokenAmount, bytes disclaimerSignature);
     event UserClaimed(address account, uint256 tokenAmount);
-    event OwnerClaimed(uint256 quoteTokenAmount);
+    event OwnerClaimed(uint256 tokenAmount, uint256 quoteTokenAmount);
     event UserRefunded(address account, uint256 quoteTokenAmount);
     event OwnerRefunded(uint256 tokenAmount);
-    event Canceled(address canceler, uint256 refundedTokenAmount, string reason);
+    event Canceled(address canceler, string reason);
     event InfoCIDChanged(string newCID);
-    event LiquidityCreated(uint256 tokenId);
+    event LiquidityCreated(uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
     event LiquidityUnlocked();
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -72,7 +85,7 @@ contract UbeStarterLaunchpadV1 is
         string memory _infoCID,
         string memory _tokenSymbol,
         uint8 _tokenDecimals
-    ) public initializer {
+    ) public initializer returns (uint256 tokenAmount) {
         _validateParams(_params);
         __ERC20_init(
             string.concat('UbeStarter Locked ', _tokenSymbol),
@@ -82,15 +95,29 @@ contract UbeStarterLaunchpadV1 is
         params = _params;
         infoCID = _infoCID;
         factory = msg.sender;
+        pool = _createPoolIfNot();
+
+        uint256 sellAmount = (params.hardCapAsQuote * params.exchangeRate) / 100_000;
+        uint256 liqQuoteAmount = (params.hardCapAsQuote * params.liquidityRate) / 100_000;
+        uint256 liqTokenAmount = QuoteLibrary.getQuoteAtTick(
+            params.priceTick,
+            uint128(liqQuoteAmount),
+            params.quoteToken,
+            params.token
+        );
+        return sellAmount + liqTokenAmount;
     }
 
-    function getParams() public view returns (LaunchpadParams memory, string memory) {
-        return (params, infoCID);
+    function getParams() public view returns (LaunchpadParams memory) {
+        return params;
     }
 
     function getStatus() public view returns (LaunchpadStatus) {
         if (isCanceled) {
             return LaunchpadStatus.Canceled;
+        }
+        if (liquidityTokenId > 0) {
+            return LaunchpadStatus.Done;
         }
         if (block.timestamp < uint256(params.startDate)) {
             return LaunchpadStatus.Pending;
@@ -99,7 +126,8 @@ contract UbeStarterLaunchpadV1 is
             return LaunchpadStatus.Succeeded;
         }
         if (
-            totalRaisedAsQuote >= params.softCapAsQuote && block.timestamp < uint256(params.endDate)
+            totalRaisedAsQuote >= params.softCapAsQuote &&
+            block.timestamp >= uint256(params.endDate)
         ) {
             return LaunchpadStatus.Succeeded;
         }
@@ -122,51 +150,45 @@ contract UbeStarterLaunchpadV1 is
             'invalid status'
         );
         isCanceled = true;
-        IERC20 token = IERC20(params.token);
-        uint256 amount = token.balanceOf(address(this));
-        ownerPaid = true;
-        SafeERC20.safeTransferFrom(token, address(this), params.owner, amount);
-        emit OwnerRefunded(amount);
-        emit Canceled(msg.sender, amount, reason);
+        cancelReason = reason;
+        emit Canceled(msg.sender, reason);
     }
 
     // User buys token when launchpad is active
     function buy(uint256 _quoteTokenAmount, bytes memory disclaimerSignature) public nonReentrant {
         require(getStatus() == LaunchpadStatus.Active, 'Token sale is not active');
+        require(params.owner != msg.sender, 'owner con not buy');
         _buy(_quoteTokenAmount);
-        if (getStatus() == LaunchpadStatus.Succeeded) {
-            _createLiquidityIfNot();
-        }
         emit TokenBought(msg.sender, _quoteTokenAmount, disclaimerSignature);
     }
 
     // User claim their released token after launchpad succeeded.
     // This function can be called multiple times because of vesting.
     function userClaim() public nonReentrant {
-        require(getStatus() == LaunchpadStatus.Succeeded, 'token sale not succeeded');
-        _createLiquidityIfNot();
+        require(getStatus() == LaunchpadStatus.Done, 'status is not done');
 
         uint256 releasable = getParticipantUnclaimedAmount(msg.sender);
         require(releasable > 0, 'No releasable amount');
 
         releasedAmounts[msg.sender] += releasable;
+        totalReleased += releasable;
         SafeERC20.safeTransferFrom(IERC20(params.token), address(this), msg.sender, releasable);
         emit UserClaimed(msg.sender, releasable);
     }
 
-    // Owner claim total raised quote tokens after launchpad succeeded.
+    // Owner claim raised quote tokens and remaining tokens after liquidity creation.
     // This function can be called once.
     function ownerClaim() public nonReentrant {
         require(msg.sender == params.owner, 'Only owner');
-        require(ownerPaid == false, 'owner already claimed');
-        require(getStatus() == LaunchpadStatus.Succeeded, 'token sale not succeeded');
-        _createLiquidityIfNot();
+        require(getStatus() == LaunchpadStatus.Done, 'status is not done');
 
         IERC20 quoteToken = IERC20(params.quoteToken);
-        uint256 amount = quoteToken.balanceOf(address(this));
-        ownerPaid = true;
-        SafeERC20.safeTransferFrom(quoteToken, address(this), msg.sender, amount);
-        emit OwnerClaimed(amount);
+        uint256 quoteTokenAmoun = quoteToken.balanceOf(address(this));
+        IERC20 token = IERC20(params.token);
+        uint256 tokenAmount = token.balanceOf(address(this)) - totalSupply();
+        SafeERC20.safeTransferFrom(quoteToken, address(this), msg.sender, quoteTokenAmoun);
+        SafeERC20.safeTransferFrom(token, address(this), msg.sender, tokenAmount);
+        emit OwnerClaimed(tokenAmount, quoteTokenAmoun);
     }
 
     // Users get tokens back if the token sale is failed
@@ -187,17 +209,27 @@ contract UbeStarterLaunchpadV1 is
     }
 
     // Owner gets tokens back if the token sale is failed
-    // This function can be called once.
     function ownerRefund() public nonReentrant {
         require(msg.sender == params.owner, 'Only owner');
-        require(ownerPaid == false, 'owner already refunded');
-        require(getStatus() == LaunchpadStatus.Failed, 'token sale not failed');
+        LaunchpadStatus status = getStatus();
+        require(
+            status == LaunchpadStatus.Failed || status == LaunchpadStatus.Canceled,
+            'token sale not failed'
+        );
 
         IERC20 token = IERC20(params.token);
         uint256 amount = token.balanceOf(address(this));
-        ownerPaid = true;
         SafeERC20.safeTransferFrom(token, address(this), msg.sender, amount);
         emit OwnerRefunded(amount);
+    }
+
+    function createLiquidity() public nonReentrant {
+        require(getStatus() == LaunchpadStatus.Succeeded, 'token sale not succeeded');
+        require(liquidityTokenId == 0, 'liquidity already created');
+        if (block.timestamp < params.endDate) {
+            require(msg.sender == params.owner, 'Only owner');
+        }
+        _createLiquidity();
     }
 
     function unlockLiquidity() public nonReentrant {
@@ -270,14 +302,13 @@ contract UbeStarterLaunchpadV1 is
         );
 
         require(p.liquidityRate >= 20_000 && p.liquidityRate <= 100_000, 'invalid liquidityRate');
-        require(
-            p.liquidityFee == 100 ||
-                p.liquidityFee == 500 ||
-                p.liquidityFee == 3000 ||
-                p.liquidityFee == 10000,
-            'invalid fee'
+        int24 tickSpacing = IUniswapV3Factory(nftPositionManager.factory()).feeAmountTickSpacing(
+            p.liquidityFee
         );
-
+        require(tickSpacing > 0, 'invalid liquidityFee');
+        require(p.tickLower % tickSpacing == 0, 'TLS');
+        require(p.tickUpper % tickSpacing == 0, 'TUS');
+        require(p.priceTick % tickSpacing == 0, 'PTS');
         require(p.tickLower < p.priceTick && p.tickUpper > p.priceTick, 'TLU');
         require(p.tickLower >= TickMath.MIN_TICK, 'TLM');
         require(p.tickUpper <= TickMath.MAX_TICK, 'TUM');
@@ -287,59 +318,85 @@ contract UbeStarterLaunchpadV1 is
     }
 
     function _buy(uint256 _quoteTokenAmount) internal {
-        require(params.owner != msg.sender, 'owner con not buy');
+        if ((totalRaisedAsQuote + _quoteTokenAmount) > params.hardCapAsQuote) {
+            _quoteTokenAmount = params.hardCapAsQuote - totalRaisedAsQuote;
+        }
         uint256 oldBuyAmount = participantToQuoteAmount[msg.sender];
-        uint256 totalQuoteAmount = oldBuyAmount + _quoteTokenAmount;
         if (oldBuyAmount == 0) {
             participantCount++;
         }
-        participantToQuoteAmount[msg.sender] = totalQuoteAmount;
         buyCount++;
+        participantToQuoteAmount[msg.sender] += _quoteTokenAmount;
         totalRaisedAsQuote += _quoteTokenAmount;
-        require(totalRaisedAsQuote <= params.hardCapAsQuote, 'hardCap exceeded');
         IERC20(params.quoteToken).transferFrom(msg.sender, address(this), _quoteTokenAmount);
     }
 
-    function _createLiquidityIfNot() internal {
-        if (liquidityTokenId == 0) {
-            address token0 = params.token;
-            address token1 = params.quoteToken;
-            uint256 token0Amount = IERC20(params.token).balanceOf(address(this));
-            uint256 token1Amount = (totalRaisedAsQuote * params.liquidityRate) / 100_000;
-            if (token0 >= token1) {
-                (token0, token1) = (token1, token0);
-                (token0Amount, token1Amount) = (token1Amount, token0Amount);
-            }
+    function _createPoolIfNot() internal returns (IUniswapV3Pool poolAddress) {
+        address token0 = params.token;
+        address token1 = params.quoteToken;
+        if (token0 >= token1) {
+            (token0, token1) = (token1, token0);
+        }
+        poolAddress = IUniswapV3Pool(
             nftPositionManager.createAndInitializePoolIfNecessary(
                 token0,
                 token1,
                 params.liquidityFee,
                 TickMath.getSqrtRatioAtTick(params.priceTick)
-            );
+            )
+        );
+        (, int24 tick, , , , , ) = pool.slot0();
+        require(
+            tick > (params.priceTick - 100) && tick < (params.priceTick + 100),
+            'invalid pool price'
+        );
+    }
 
-            SafeERC20.forceApprove(IERC20(token0), address(nftPositionManager), token0Amount);
-            SafeERC20.forceApprove(IERC20(token1), address(nftPositionManager), token1Amount);
+    function _createLiquidity() internal {
+        (, int24 tick, , , , , ) = pool.slot0();
+        require(
+            tick > (params.priceTick - 100) && tick < (params.priceTick + 100),
+            'invalid pool price'
+        );
 
-            INonfungiblePositionManager.MintParams memory mintParams = INonfungiblePositionManager
-                .MintParams({
-                    token0: token0,
-                    token1: token1,
-                    fee: params.liquidityFee,
-                    tickLower: params.tickLower,
-                    tickUpper: params.tickUpper,
-                    amount0Desired: token0Amount,
-                    amount1Desired: token1Amount,
-                    amount0Min: 0,
-                    amount1Min: 0,
-                    recipient: address(this),
-                    deadline: block.timestamp + 5 minutes
-                });
-
-            (uint256 tokenId, , , ) = nftPositionManager.mint(mintParams);
-            liquidityTokenId = tokenId;
-
-            emit LiquidityCreated(tokenId);
+        address token0 = params.token;
+        address token1 = params.quoteToken;
+        uint256 token1Amount = (totalRaisedAsQuote * params.liquidityRate) / 100_000;
+        uint256 token0Amount = QuoteLibrary.getQuoteAtTick(
+            params.priceTick,
+            uint128(token1Amount),
+            token1,
+            token0
+        );
+        if (token0 >= token1) {
+            (token0, token1) = (token1, token0);
+            (token0Amount, token1Amount) = (token1Amount, token0Amount);
         }
+
+        SafeERC20.forceApprove(IERC20(token0), address(nftPositionManager), token0Amount);
+        SafeERC20.forceApprove(IERC20(token1), address(nftPositionManager), token1Amount);
+
+        INonfungiblePositionManager.MintParams memory mintParams = INonfungiblePositionManager
+            .MintParams({
+                token0: token0,
+                token1: token1,
+                fee: params.liquidityFee,
+                tickLower: params.tickLower,
+                tickUpper: params.tickUpper,
+                amount0Desired: token0Amount,
+                amount1Desired: token1Amount,
+                amount0Min: (token0Amount * 98) / 100,
+                amount1Min: (token1Amount * 98) / 100,
+                recipient: address(this),
+                deadline: block.timestamp + 5 minutes
+            });
+
+        (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) = nftPositionManager
+            .mint(mintParams);
+
+        liquidityTokenId = tokenId;
+
+        emit LiquidityCreated(tokenId, liquidity, amount0, amount1);
     }
 
     function _calculateUnlocked(
@@ -368,9 +425,15 @@ contract UbeStarterLaunchpadV1 is
         return tokenDecimals;
     }
     function totalSupply() public view override returns (uint256) {
-        return (totalRaisedAsQuote * params.exchangeRate) * 100_000;
+        if (isCanceled) {
+            return 0;
+        }
+        return ((totalRaisedAsQuote * params.exchangeRate) * 100_000) - totalReleased;
     }
     function balanceOf(address account) public view override returns (uint256) {
+        if (isCanceled) {
+            return 0;
+        }
         return getParticipantTotalTokenAmount(account) - releasedAmounts[account];
     }
     function transfer(address, uint256) public pure override returns (bool) {
@@ -381,5 +444,16 @@ contract UbeStarterLaunchpadV1 is
     }
     function transferFrom(address, address, uint256) public pure override returns (bool) {
         revert('non-transferable');
+    }
+
+    // IERC721Receiver override
+    function onERC721Received(
+        address,
+        address,
+        uint256,
+        bytes calldata
+    ) external view override returns (bytes4) {
+        require(msg.sender == address(nftPositionManager), 'not a ubev3 nft');
+        return this.onERC721Received.selector;
     }
 }

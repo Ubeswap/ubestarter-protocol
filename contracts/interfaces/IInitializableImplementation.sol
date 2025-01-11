@@ -32,7 +32,7 @@ interface IInitializableImplementation {
         string memory infoCID,
         string memory tokenSymbol,
         uint8 tokenDecimals
-    ) external;
+    ) external returns (uint256);
 
     function cancel(string memory reason) external;
 }

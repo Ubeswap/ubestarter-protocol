@@ -146,7 +146,7 @@ contract UbestarterFactory is Ownable {
             string memory tokenSymbol = token.symbol();
             require(bytes(tokenSymbol).length > 0, 'invalid token symbol');
 
-            IInitializableImplementation(newContract).initialize(
+            uint256 tokensToTransfer = IInitializableImplementation(newContract).initialize(
                 params,
                 extraParams,
                 infoCID,
@@ -168,9 +168,7 @@ contract UbestarterFactory is Ownable {
                 deploymentFee
             );
 
-            uint256 sellAmount = (params.hardCapAsQuote * params.exchangeRate) / 100_000;
-            uint256 liqAmount = (sellAmount * params.liquidityRate) / 100_000;
-            SafeERC20.safeTransferFrom(token, msg.sender, newContract, sellAmount + liqAmount);
+            SafeERC20.safeTransferFrom(token, msg.sender, newContract, tokensToTransfer);
         }
 
         emit LaunchpadDeployed(
