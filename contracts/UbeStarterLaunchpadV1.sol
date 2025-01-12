@@ -50,15 +50,14 @@ contract UbeStarterLaunchpadV1 is
     string public cancelReason;
 
     uint256 private constant MIN_START_DELAY = 1 hours; // 3 days
-    uint256 private MAX_START_DELAY = 7 days;
-    uint256 private MIN_LAUNCHPAD_DURATION = 1 hours; // 1 days
-    uint256 private MAX_LAUNCHPAD_DURATION = 10 days;
-    uint256 private INFO_CHANGE_DEADLINE = 1 hours; // 1 days
-    uint256 private MAX_CLIFF = 30 days;
-    int24 private MIN_TICK_RANGE = 9000;
+    uint256 private constant MAX_START_DELAY = 7 days;
+    uint256 private constant MIN_LAUNCHPAD_DURATION = 1 hours; // 1 days
+    uint256 private constant MAX_LAUNCHPAD_DURATION = 10 days;
+    uint256 private constant INFO_CHANGE_DEADLINE = 1 hours; // 1 days
+    uint256 private constant MAX_CLIFF = 30 days;
+    int24 private constant MIN_TICK_RANGE = 9000;
 
-    INonfungiblePositionManager public nftPositionManager =
-        INonfungiblePositionManager(0x897387c7B996485c3AAa85c94272Cd6C506f8c8F);
+    INonfungiblePositionManager public immutable nftPositionManager;
     IUniswapV3Pool public pool;
 
     uint8 private tokenDecimals;
@@ -75,8 +74,9 @@ contract UbeStarterLaunchpadV1 is
     event LiquidityUnlocked();
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(address _nftPositionManager) {
         _disableInitializers();
+        nftPositionManager = INonfungiblePositionManager(_nftPositionManager);
     }
 
     function initialize(
