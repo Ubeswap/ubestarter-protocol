@@ -7,10 +7,11 @@ import { Clones } from '@openzeppelin/contracts/proxy/Clones.sol';
 import { ECDSA } from '@openzeppelin/contracts/utils/cryptography/ECDSA.sol';
 import { ERC20Upgradeable } from '@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol';
 import { SafeERC20 } from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
-import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import { INonfungiblePositionManager } from './interfaces/uniswap-v3/INonfungiblePositionManager.sol';
 import { TickMath } from './libraries/TickMath.sol';
 import { QuoteLibrary } from './libraries/QuoteLibrary.sol';
+import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+import { IERC20Metadata } from '@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol';
 import { IInitializableImplementation } from './interfaces/IInitializableImplementation.sol';
 import { IERC721Receiver } from '@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol';
 import { IUniswapV3Pool } from './interfaces/uniswap-v3/IUniswapV3Pool.sol';
@@ -50,9 +51,9 @@ contract UbeStarterLaunchpadV1 is
     string public cancelReason;
 
     uint256 private constant MIN_START_DELAY = 1 hours; // 3 days
-    uint256 private constant MAX_START_DELAY = 7 days;
+    uint256 private constant MAX_START_DELAY = 10 days;
     uint256 private constant MIN_LAUNCHPAD_DURATION = 1 hours; // 1 days
-    uint256 private constant MAX_LAUNCHPAD_DURATION = 10 days;
+    uint256 private constant MAX_LAUNCHPAD_DURATION = 7 days;
     uint256 private constant INFO_CHANGE_DEADLINE = 1 hours; // 1 days
     uint256 private constant MAX_CLIFF = 30 days;
     int24 private constant MIN_TICK_RANGE = 9000;
@@ -97,7 +98,7 @@ contract UbeStarterLaunchpadV1 is
         factory = msg.sender;
         pool = _createPoolIfNot();
 
-        uint256 sellAmount = (params.hardCapAsQuote * params.exchangeRate) / 100_000;
+        uint256 sellAmount = _calculateSoldAmount(params.hardCapAsQuote);
         uint256 liqQuoteAmount = (params.hardCapAsQuote * params.liquidityRate) / 100_000;
         uint256 liqTokenAmount = QuoteLibrary.getQuoteAtTick(
             params.priceTick,
@@ -157,7 +158,7 @@ contract UbeStarterLaunchpadV1 is
     // User buys token when launchpad is active
     function buy(uint256 _quoteTokenAmount, bytes memory disclaimerSignature) public nonReentrant {
         require(getStatus() == LaunchpadStatus.Active, 'Token sale is not active');
-        require(params.owner != msg.sender, 'owner con not buy');
+        require(params.owner != msg.sender, 'owner can not buy');
         _buy(_quoteTokenAmount);
         emit TokenBought(msg.sender, _quoteTokenAmount, disclaimerSignature);
     }
@@ -242,7 +243,7 @@ contract UbeStarterLaunchpadV1 is
 
     // this is the amount of tokens that the participant has bought
     function getParticipantTotalTokenAmount(address participant) public view returns (uint256) {
-        return (participantToQuoteAmount[participant] * params.exchangeRate) / 100_000;
+        return _calculateSoldAmount(participantToQuoteAmount[participant]);
     }
 
     function getParticipantUnlockedAmount(
@@ -399,6 +400,15 @@ contract UbeStarterLaunchpadV1 is
         emit LiquidityCreated(tokenId, liquidity, amount0, amount1);
     }
 
+    function _calculateSoldAmount(uint256 quoteTokenAmount) internal view returns (uint256) {
+        uint8 quoteDecimals = IERC20Metadata(params.quoteToken).decimals();
+        uint256 multiplier = tokenDecimals > quoteDecimals
+            ? 10 ** (tokenDecimals - quoteDecimals)
+            : 1;
+        uint256 divider = quoteDecimals > tokenDecimals ? 10 ** (quoteDecimals - tokenDecimals) : 1;
+        return (quoteTokenAmount * params.exchangeRate * multiplier) / (100_000 * divider);
+    }
+
     function _calculateUnlocked(
         uint256 totalAllocation,
         uint32 timestamp,
@@ -428,7 +438,7 @@ contract UbeStarterLaunchpadV1 is
         if (isCanceled) {
             return 0;
         }
-        return ((totalRaisedAsQuote * params.exchangeRate) * 100_000) - totalReleased;
+        return _calculateSoldAmount(totalRaisedAsQuote) - totalReleased;
     }
     function balanceOf(address account) public view override returns (uint256) {
         if (isCanceled) {
