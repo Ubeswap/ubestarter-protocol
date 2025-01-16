@@ -129,7 +129,9 @@ contract UbestarterFactory is Ownable {
         }
 
         address verifier = _validateSignatures(
-            keccak256(abi.encode(params, extraParams, infoCID)),
+            MessageHashUtils.toEthSignedMessageHash(
+                keccak256(abi.encode(params, extraParams, infoCID))
+            ),
             verifierSignature,
             creatorDisclaimerHash,
             creatorDisclaimerSignature
@@ -193,12 +195,17 @@ contract UbestarterFactory is Ownable {
         bytes memory creatorDisclaimerSignature
     ) internal view returns (address) {
         require(bytes(disclaimerMessages[creatorDisclaimerHash]).length > 0, 'invalid disclaimer');
-        require(
-            ECDSA.recover(creatorDisclaimerHash, creatorDisclaimerSignature) == msg.sender,
-            'invalid creator signature'
+        (address discSigner, ECDSA.RecoverError err1, ) = ECDSA.tryRecover(
+            creatorDisclaimerHash,
+            creatorDisclaimerSignature
         );
-        address verifier = ECDSA.recover(hash, verifierSignature);
+        require(err1 == ECDSA.RecoverError.NoError, 'ecrecover err1');
+        require(discSigner == msg.sender, 'invalid creator signature');
+
+        (address verifier, ECDSA.RecoverError err2, ) = ECDSA.tryRecover(hash, verifierSignature);
+        require(err2 == ECDSA.RecoverError.NoError, 'ecrecover err2');
         require(verifiers[verifier] == true, 'invalid verifier');
+
         return verifier;
     }
 }

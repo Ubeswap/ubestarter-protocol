@@ -16,6 +16,7 @@ import { IInitializableImplementation } from './interfaces/IInitializableImpleme
 import { IERC721Receiver } from '@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol';
 import { IUniswapV3Pool } from './interfaces/uniswap-v3/IUniswapV3Pool.sol';
 import { IUniswapV3Factory } from './interfaces/uniswap-v3/IUniswapV3Factory.sol';
+import { Strings } from '@openzeppelin/contracts/utils/Strings.sol';
 
 contract UbeStarterLaunchpadV1 is
     Initializable,
@@ -123,13 +124,14 @@ contract UbeStarterLaunchpadV1 is
         if (block.timestamp < uint256(params.startDate)) {
             return LaunchpadStatus.Pending;
         }
-        if (totalRaisedAsQuote >= params.hardCapAsQuote) {
-            return LaunchpadStatus.Succeeded;
+        if (block.timestamp >= uint256(params.endDate)) {
+            if (totalRaisedAsQuote >= params.softCapAsQuote) {
+                return LaunchpadStatus.Succeeded;
+            } else {
+                return LaunchpadStatus.Failed;
+            }
         }
-        if (
-            totalRaisedAsQuote >= params.softCapAsQuote &&
-            block.timestamp >= uint256(params.endDate)
-        ) {
+        if (totalRaisedAsQuote >= params.hardCapAsQuote) {
             return LaunchpadStatus.Succeeded;
         }
         return LaunchpadStatus.Active;
@@ -332,13 +334,13 @@ contract UbeStarterLaunchpadV1 is
         IERC20(params.quoteToken).transferFrom(msg.sender, address(this), _quoteTokenAmount);
     }
 
-    function _createPoolIfNot() internal returns (IUniswapV3Pool poolAddress) {
+    function _createPoolIfNot() internal returns (IUniswapV3Pool poolContract) {
         address token0 = params.token;
         address token1 = params.quoteToken;
         if (token0 >= token1) {
             (token0, token1) = (token1, token0);
         }
-        poolAddress = IUniswapV3Pool(
+        poolContract = IUniswapV3Pool(
             nftPositionManager.createAndInitializePoolIfNecessary(
                 token0,
                 token1,
@@ -346,7 +348,7 @@ contract UbeStarterLaunchpadV1 is
                 TickMath.getSqrtRatioAtTick(params.priceTick)
             )
         );
-        (, int24 tick, , , , , ) = pool.slot0();
+        (, int24 tick, , , , , ) = poolContract.slot0();
         require(
             tick > (params.priceTick - 100) && tick < (params.priceTick + 100),
             'invalid pool price'
