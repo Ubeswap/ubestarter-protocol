@@ -58,6 +58,7 @@ contract UbeStarterLaunchpadV1 is
     uint256 private constant INFO_CHANGE_DEADLINE = 1 hours; // 1 days
     uint256 private constant MAX_CLIFF = 30 days;
     int24 private constant MIN_TICK_RANGE = 9000;
+    address constant burnAddress = 0x000000000000000000000000000000000000dEaD;
 
     INonfungiblePositionManager public immutable nftPositionManager;
     IUniswapV3Pool public pool;
@@ -399,10 +400,12 @@ contract UbeStarterLaunchpadV1 is
 
         (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) = nftPositionManager
             .mint(mintParams);
-
         liquidityTokenId = tokenId;
-
         emit LiquidityCreated(tokenId, liquidity, amount0, amount1);
+
+        if (params.lockDuration == type(uint32).max) {
+            nftPositionManager.safeTransferFrom(address(this), burnAddress, tokenId);
+        }
     }
 
     function _calculateSoldAmount(uint256 quoteTokenAmount) internal view returns (uint256) {
