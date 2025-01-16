@@ -175,6 +175,7 @@ contract UbeStarterLaunchpadV1 is
 
         releasedAmounts[msg.sender] += releasable;
         totalReleased += releasable;
+        _burn(msg.sender, releasable);
         SafeERC20.safeTransferFrom(IERC20(params.token), address(this), msg.sender, releasable);
         emit UserClaimed(msg.sender, releasable);
     }
@@ -207,6 +208,7 @@ contract UbeStarterLaunchpadV1 is
         require(amount > 0, 'No refundable amount');
 
         participantToQuoteAmount[msg.sender] = 0;
+        _burn(msg.sender, balanceOf(msg.sender));
         SafeERC20.safeTransferFrom(IERC20(params.quoteToken), address(this), msg.sender, amount);
         emit UserRefunded(msg.sender, amount);
     }
@@ -331,6 +333,7 @@ contract UbeStarterLaunchpadV1 is
         buyCount++;
         participantToQuoteAmount[msg.sender] += _quoteTokenAmount;
         totalRaisedAsQuote += _quoteTokenAmount;
+        _mint(msg.sender, getParticipantTotalTokenAmount(msg.sender) - balanceOf(msg.sender));
         IERC20(params.quoteToken).transferFrom(msg.sender, address(this), _quoteTokenAmount);
     }
 
@@ -435,18 +438,6 @@ contract UbeStarterLaunchpadV1 is
     // ERC-20 overrides
     function decimals() public view override returns (uint8) {
         return tokenDecimals;
-    }
-    function totalSupply() public view override returns (uint256) {
-        if (isCanceled) {
-            return 0;
-        }
-        return _calculateSoldAmount(totalRaisedAsQuote) - totalReleased;
-    }
-    function balanceOf(address account) public view override returns (uint256) {
-        if (isCanceled) {
-            return 0;
-        }
-        return getParticipantTotalTokenAmount(account) - releasedAmounts[account];
     }
     function transfer(address, uint256) public pure override returns (bool) {
         revert('non-transferable');
