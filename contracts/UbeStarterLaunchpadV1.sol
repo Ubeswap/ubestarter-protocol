@@ -314,7 +314,6 @@ contract UbeStarterLaunchpadV1 is
         require(tickSpacing > 0, 'invalid liquidityFee');
         require(p.tickLower % tickSpacing == 0, 'TLS');
         require(p.tickUpper % tickSpacing == 0, 'TUS');
-        require(p.priceTick % tickSpacing == 0, 'PTS');
         require(p.tickLower < p.priceTick && p.tickUpper > p.priceTick, 'TLU');
         require(p.tickLower >= TickMath.MIN_TICK, 'TLM');
         require(p.tickUpper <= TickMath.MAX_TICK, 'TUM');
