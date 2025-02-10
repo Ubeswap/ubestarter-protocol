@@ -51,11 +51,11 @@ contract UbeStarterLaunchpadV1 is
     uint256 public totalReleased;
     string public cancelReason;
 
-    uint256 private constant MIN_START_DELAY = 1 hours; // 3 days
-    uint256 private constant MAX_START_DELAY = 10 days;
-    uint256 private constant MIN_LAUNCHPAD_DURATION = 1 hours; // 1 days
+    uint256 private constant MIN_START_DELAY = 3 days;
+    uint256 private constant MAX_START_DELAY = 30 days;
+    uint256 private constant MIN_LAUNCHPAD_DURATION = 1 days;
     uint256 private constant MAX_LAUNCHPAD_DURATION = 7 days;
-    uint256 private constant INFO_CHANGE_DEADLINE = 1 hours; // 1 days
+    uint256 private constant INFO_CHANGE_DEADLINE = 1 days;
     uint256 private constant MAX_CLIFF = 30 days;
     int24 private constant MIN_TICK_RANGE = 9000;
     address constant burnAddress = 0x000000000000000000000000000000000000dEaD;
@@ -92,7 +92,7 @@ contract UbeStarterLaunchpadV1 is
         _validateParams(_params);
         __ERC20_init(
             string.concat('UbeStarter Locked ', _tokenSymbol),
-            string.concat('l-', _tokenSymbol)
+            string.concat('L-', _tokenSymbol)
         );
         tokenDecimals = _tokenDecimals;
         params = _params;
@@ -177,7 +177,7 @@ contract UbeStarterLaunchpadV1 is
         releasedAmounts[msg.sender] += releasable;
         totalReleased += releasable;
         _burn(msg.sender, releasable);
-        SafeERC20.safeTransferFrom(IERC20(params.token), address(this), msg.sender, releasable);
+        IERC20(params.token).transfer(msg.sender, releasable);
         emit UserClaimed(msg.sender, releasable);
     }
 
@@ -190,9 +190,15 @@ contract UbeStarterLaunchpadV1 is
         IERC20 quoteToken = IERC20(params.quoteToken);
         uint256 quoteTokenAmoun = quoteToken.balanceOf(address(this));
         IERC20 token = IERC20(params.token);
-        uint256 tokenAmount = token.balanceOf(address(this)) - totalSupply();
-        SafeERC20.safeTransferFrom(quoteToken, address(this), msg.sender, quoteTokenAmoun);
-        SafeERC20.safeTransferFrom(token, address(this), msg.sender, tokenAmount);
+        uint256 totalSupply = totalSupply();
+        uint256 tokenAmount = token.balanceOf(address(this));
+        if (quoteTokenAmoun > 0) {
+            quoteToken.transfer(msg.sender, quoteTokenAmoun);
+        }
+        if (totalSupply < tokenAmount) {
+            tokenAmount = tokenAmount - totalSupply;
+            token.transfer(msg.sender, tokenAmount);
+        }
         emit OwnerClaimed(tokenAmount, quoteTokenAmoun);
     }
 
@@ -210,7 +216,7 @@ contract UbeStarterLaunchpadV1 is
 
         participantToQuoteAmount[msg.sender] = 0;
         _burn(msg.sender, balanceOf(msg.sender));
-        SafeERC20.safeTransferFrom(IERC20(params.quoteToken), address(this), msg.sender, amount);
+        IERC20(params.quoteToken).transfer(msg.sender, amount);
         emit UserRefunded(msg.sender, amount);
     }
 
@@ -225,7 +231,7 @@ contract UbeStarterLaunchpadV1 is
 
         IERC20 token = IERC20(params.token);
         uint256 amount = token.balanceOf(address(this));
-        SafeERC20.safeTransferFrom(token, address(this), msg.sender, amount);
+        token.transfer(msg.sender, amount);
         emit OwnerRefunded(amount);
     }
 
@@ -298,7 +304,7 @@ contract UbeStarterLaunchpadV1 is
         require(p.exchangeRate > 0, 'invalid exchangeRate');
 
         require(
-            p.releaseInterval < p.releaseDuration &&
+            (p.releaseDuration == 0 || p.releaseInterval < p.releaseDuration) &&
                 p.releaseDuration % p.releaseInterval == 0 &&
                 p.cliffDuration <= MAX_CLIFF &&
                 p.initialReleaseRate <= 100_000 &&
